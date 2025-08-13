@@ -1,0 +1,199 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database (Development)
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai_scrapy_postgres_dev
+    environment:
+      POSTGRES_DB: ai_scrapy_dashboard_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password_dev
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_scrapy_dashboard_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Development
+  redis:
+    image: redis:7-alpine
+    container_name: ai_scrapy_redis_dev
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main Application (Development)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ai_scrapy_app_dev
+    environment:
+      # Database Configuration
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ai_scrapy_dashboard_dev
+      DB_USER: postgres
+      DB_PASSWORD: postgres_password_dev
+      
+      # Redis Configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      
+      # OpenRouter API Configuration
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-mock_mode}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-3.5-sonnet}
+      
+      # Development Settings
+      DEBUG: True
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+      
+      # Scraping Configuration
+      SCRAPING_DELAY: 1
+      SCRAPING_TIMEOUT: 60
+      SCRAPING_RETRY_TIMES: 5
+    volumes:
+      - .:/app  # Mount source code for live reloading
+      - ./logs:/app/logs
+      - ./exports:/app/exports
+      - ./httpcache:/app/httpcache
+      - ./.env:/app/.env:ro
+    ports:
+      - "8502:8501"  # Different port to avoid conflicts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+    command: ["streamlit", "run", "dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.runOnSave=true"]
+
+  # Development Tools
+  # pgAdmin for Database Management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ai_scrapy_pgadmin_dev
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_dev_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+
+  # Redis Commander for Redis Management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: ai_scrapy_redis_commander_dev
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+
+  # Jupyter Notebook for Data Analysis
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ai_scrapy_jupyter_dev
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ai_scrapy_dashboard_dev
+      DB_USER: postgres
+      DB_PASSWORD: postgres_password_dev
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - .:/app
+      - ./notebooks:/app/notebooks
+      - ./logs:/app/logs
+    ports:
+      - "8888:8888"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+    command: ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+
+  # Development Pipeline Runner
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ai_scrapy_pipeline_dev
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ai_scrapy_dashboard_dev
+      DB_USER: postgres
+      DB_PASSWORD: postgres_password_dev
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-mock_mode}
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai_scrapy_dev_network
+    restart: unless-stopped
+    command: ["python", "run_pipeline.py", "--full"]
+
+volumes:
+  postgres_dev_data:
+    driver: local
+  redis_dev_data:
+    driver: local
+  pgadmin_dev_data:
+    driver: local
+
+networks:
+  ai_scrapy_dev_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16 
